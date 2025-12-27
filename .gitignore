@@ -1,0 +1,12 @@
+/.idea/
+/.vscode/
+
+/bin/
+/dist/
+/artifacts/
+
+*.exe
+*.test
+*.out
+
+go.work
