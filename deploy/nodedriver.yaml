@@ -1,0 +1,18 @@
+apiVersion: management.cattle.io/v3
+kind: NodeDriver
+metadata:
+  name: makecloud
+  annotations:
+    publicCredentialFields: baseUrl,vdcId
+    privateCredentialFields: token
+spec:
+  active: true
+  addCloudCredential: true
+  builtin: false
+  checksum: ""
+  description: ""
+  displayName: makecloud
+  externalId: ""
+  uiUrl: ""
+  url: https://github.com/gorizond/docker-machine-driver-makecloud/releases/download/v0.1.2/docker-machine-driver-makecloud_v0.1.2_linux_amd64.tar.gz
+  whitelistDomains: []

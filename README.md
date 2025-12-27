@@ -19,18 +19,19 @@ apiVersion: management.cattle.io/v3
 kind: NodeDriver
 metadata:
   annotations:
+    publicCredentialFields: baseUrl,vdcId
     privateCredentialFields: token
   name: makecloud
 spec:
   active: true
-  addCloudCredential: false
+  addCloudCredential: true
   builtin: false
   checksum: ''
   description: ''
   displayName: makecloud
   externalId: ''
   uiUrl: ''
-  url: https://github.com/gorizond/docker-machine-driver-makecloud/releases/download/v0.1.1/docker-machine-driver-makecloud_v0.1.1_linux_amd64.tar.gz
+  url: https://github.com/gorizond/docker-machine-driver-makecloud/releases/download/v0.1.2/docker-machine-driver-makecloud_v0.1.2_linux_amd64.tar.gz
   whitelistDomains: []
 ```
 
@@ -38,7 +39,23 @@ spec:
 
 UI extension для Rancher Dashboard лежит в `pkg/makecloud-node-driver`.
 
-Локальный запуск Rancher Dashboard с подключением к удалённому Rancher (через прокси) описан в `docs/UI_EXTENSION.md`.
+### Dev (локально через прокси на удалённый Rancher)
+
+Требуется: Node.js 20+ (см. `.nvmrc`), Yarn.
+
+```bash
+yarn install
+API="https://<RANCHER_HOST>" yarn dev
+```
+
+Открой `https://127.0.0.1:8005` (порт см. в выводе `yarn dev`), залогинься в Rancher и перейди в:
+
+- `Cluster Management -> Drivers -> Node Drivers -> makecloud`
+
+### Publish (GitHub Actions / GitHub Pages)
+
+Workflow `.github/workflows/build-extension-charts.yml` публикует extension в ветку `gh-pages` (Helm repo).
+Для выпуска: обнови версию в `pkg/makecloud-node-driver/package.json`, запушь и создай GitHub Release с тегом `makecloud-node-driver-<version>`.
 
 ## Пример использования (docker-machine / rancher-machine)
 
@@ -66,8 +83,9 @@ docker-machine create -d makecloud \
 - `--makecloud-ram` — RAM в GiB (строка, допускает float)
 - `--makecloud-disk-size` — root disk size в GiB
 - `--makecloud-network-id` — сеть (если не задано, берётся default сеть VDC)
-- `--makecloud-firewall-template-id` — шаблоны FW, которые прикрепляются к порту VM (повторяемый). Если не задано — драйвер пытается применить дефолтный шаблон для исходящих (`По-умолчанию` / `Разрешить все исходящие соединения`). При использовании `--makecloud-floating-ip` по умолчанию добавляется ещё шаблон WEB.
+- `--makecloud-firewall-template-id` — шаблоны FW, которые прикрепляются к порту VM (повторяемый). Если не задано — драйвер не прикрепляет шаблоны (обычно это приводит к недоступности/отсутствию правил). Для публичного IP как минимум добавь шаблоны для исходящих и WEB.
 - `--makecloud-floating-ip` — floating IP (адрес или ID). Если задан, драйвер предпочитает его для подключения.
+- `--makecloud-allocate-floating-ip` — создать новый public IP (floating port) и привязать к VM; будет удалён при `docker-machine rm`. Игнорируется, если задан `--makecloud-floating-ip`.
 - `--makecloud-user-data` — cloud-init user-data (строкой, `@path` или просто `path`)
 - `--makecloud-no-inject-ssh-key` — отключить автодобавление SSH ключа через cloud-init (по умолчанию включено)
 - `--makecloud-metadata` — значения template fields в формате `key=value` (ключ может быть field ID / system_alias / name; повторяемый)
@@ -77,3 +95,4 @@ docker-machine create -d makecloud \
 - Драйвер выбирает IP в таком порядке: `floating.ip_address` → первый `port.ip_address`.
 - Если VM создаётся только во внутренней сети без floating IP и без маршрутизации наружу — `docker-machine`/`rancher-machine` не смогут подключиться по SSH.
 - При использовании `--makecloud-floating-ip` драйвер также пытается применить на floating-порту шаблон FW для WEB (если он есть в VDC: `Разрешить WEB`). Для SSH добавь нужный шаблон через `--makecloud-firewall-template-id`.
+- При использовании `--makecloud-allocate-floating-ip` драйвер пытается сам создать новый floating port (public IP) в VDC, привязать его к VM и удалить при удалении машины. Шаблоны FW на порты задаются через `--makecloud-firewall-template-id` (в Rancher UI extension они подставляются автоматически).

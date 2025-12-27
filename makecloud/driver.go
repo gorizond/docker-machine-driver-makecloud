@@ -26,24 +26,6 @@ const (
 	defaultAPIBaseURL = "https://cp.iteco.cloud"
 )
 
-var (
-	defaultFirewallEgressNames = []string{
-		"Разрешить все исходящие соединения",
-		"По-умолчанию",
-		"По умолчанию",
-		"Default",
-	}
-	defaultFirewallSSHNames = []string{
-		"Разрешить SSH для управление хостом",
-		"Разрешить SSH",
-	}
-	defaultFirewallWebNames = []string{
-		"Разрешить WEB порты, доступные из Интернета",
-		"Разрешить WEB порты",
-		"Разрешить WEB",
-	}
-)
-
 type Driver struct {
 	*drivers.BaseDriver
 
@@ -64,6 +46,8 @@ type Driver struct {
 	NetworkID           string   `json:"networkId,omitempty"`
 	FirewallTemplateIDs []string `json:"firewallTemplateIds,omitempty"`
 	FloatingIP          string   `json:"floatingIp,omitempty"`
+	AllocateFloatingIP  bool     `json:"allocateFloatingIp,omitempty"`
+	AllocatedFloatingID string   `json:"allocatedFloatingId,omitempty"`
 
 	StorageProfileID string  `json:"storageProfileId,omitempty"`
 	DiskSizeGB       int     `json:"diskSizeGb,omitempty"`
@@ -161,6 +145,11 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "Floating IP (address or ID) to attach to VM",
 			EnvVar: "MAKECLOUD_FLOATING_IP",
 		},
+		mcnflag.BoolFlag{
+			Name:   "makecloud-allocate-floating-ip",
+			Usage:  "Allocate a new public floating IP (and delete it on remove). Ignored if makecloud-floating-ip is set",
+			EnvVar: "MAKECLOUD_ALLOCATE_FLOATING_IP",
+		},
 
 		mcnflag.StringFlag{
 			Name:   "makecloud-storage-profile-id",
@@ -247,6 +236,7 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	d.NetworkID = opts.String("makecloud-network-id")
 	d.FirewallTemplateIDs = opts.StringSlice("makecloud-firewall-template-id")
 	d.FloatingIP = opts.String("makecloud-floating-ip")
+	d.AllocateFloatingIP = opts.Bool("makecloud-allocate-floating-ip")
 
 	d.StorageProfileID = opts.String("makecloud-storage-profile-id")
 	d.DiskSizeGB = opts.Int("makecloud-disk-size")
@@ -376,7 +366,7 @@ func (d *Driver) Create() (err error) {
 
 	tags := toTags(d.Tags)
 
-	fwTemplates, err := d.resolveFirewallTemplates(vdc, m, false)
+	fwTemplates, err := d.resolveFirewallTemplates(vdc, m)
 	if err != nil {
 		return err
 	}
@@ -416,6 +406,12 @@ func (d *Driver) Create() (err error) {
 				_ = p.Delete()
 			}
 		}
+		if d.AllocatedFloatingID != "" {
+			p, pErr := cleanupManager.GetPort(d.AllocatedFloatingID)
+			if pErr == nil {
+				_ = p.Delete()
+			}
+		}
 	}()
 
 	disk := &bcc.Disk{
@@ -443,13 +439,22 @@ func (d *Driver) Create() (err error) {
 	if userData != "" {
 		vm.UserData = &userData
 	}
-	if strings.TrimSpace(d.FloatingIP) != "" {
-		fip := strings.TrimSpace(d.FloatingIP)
-		if net.ParseIP(fip) != nil {
-			vm.Floating = &bcc.Port{IpAddress: &fip}
+
+	floatingRequested := strings.TrimSpace(d.FloatingIP)
+	allocateFloating := d.AllocateFloatingIP && floatingRequested == ""
+	if floatingRequested != "" {
+		if net.ParseIP(floatingRequested) != nil {
+			vm.Floating = &bcc.Port{IpAddress: &floatingRequested}
 		} else {
-			vm.Floating = &bcc.Port{ID: fip}
+			vm.Floating = &bcc.Port{ID: floatingRequested}
 		}
+	} else if allocateFloating {
+		fport, ferr := d.allocateFloatingPort(vdc, m, tags)
+		if ferr != nil {
+			return ferr
+		}
+		d.AllocatedFloatingID = fport.ID
+		vm.Floating = &bcc.Port{ID: fport.ID}
 	}
 
 	if err := vdc.CreateVm(vm); err != nil {
@@ -459,8 +464,8 @@ func (d *Driver) Create() (err error) {
 
 	// If a floating IP was requested, ensure security templates are applied to
 	// the floating port too (it controls inbound connectivity from the Internet).
-	if strings.TrimSpace(d.FloatingIP) != "" {
-		desired, derr := d.resolveFirewallTemplates(vdc, m, true)
+	if floatingRequested != "" || allocateFloating {
+		desired, derr := d.resolveFirewallTemplates(vdc, m)
 		if derr != nil {
 			return derr
 		}
@@ -626,6 +631,13 @@ func (d *Driver) Remove() error {
 			return err
 		}
 		d.PortID = ""
+	}
+
+	if d.AllocatedFloatingID != "" {
+		if err := d.removePort(ctx, m, d.AllocatedFloatingID); err != nil {
+			return err
+		}
+		d.AllocatedFloatingID = ""
 	}
 
 	return nil
@@ -794,28 +806,84 @@ func (d *Driver) resolveNetwork(vdc *bcc.Vdc, m *bcc.Manager) (*bcc.Network, err
 	return nil, errors.New("no networks found in VDC")
 }
 
-func (d *Driver) resolveFirewallTemplates(vdc *bcc.Vdc, m *bcc.Manager, wantPublic bool) ([]*bcc.FirewallTemplate, error) {
-	if len(d.FirewallTemplateIDs) == 0 {
-		templates, err := vdc.GetFirewallTemplates()
-		if err != nil {
-			return nil, fmt.Errorf("list firewall templates: %w", err)
-		}
+func (d *Driver) allocateFloatingPort(vdc *bcc.Vdc, m *bcc.Manager, tags []bcc.Tag) (*bcc.Port, error) {
+	networkID, err := d.resolveFloatingNetworkID(vdc, m)
+	if err != nil {
+		return nil, err
+	}
 
-		egress := findFirewallTemplateByNames(templates, defaultFirewallEgressNames)
-		if egress == nil {
-			return nil, errors.New("default firewall template not found (expected one of: \"По-умолчанию\" / \"Разрешить все исходящие соединения\"); set --makecloud-firewall-template-id explicitly")
-		}
+	fwTemplates, err := d.resolveFirewallTemplates(vdc, m)
+	if err != nil {
+		return nil, err
+	}
 
-		out := []*bcc.FirewallTemplate{{ID: egress.ID}}
-		if wantPublic {
-			webT := findFirewallTemplateByNames(templates, defaultFirewallWebNames)
-			if webT == nil {
-				return nil, errors.New("default WEB firewall template not found (expected \"Разрешить WEB\"); set --makecloud-firewall-template-id explicitly")
+	port := &bcc.Port{
+		Network:           &bcc.Network{ID: networkID},
+		FirewallTemplates: fwTemplates,
+		Tags:              tags,
+	}
+	if err := vdc.CreateEmptyPort(port); err != nil {
+		return nil, fmt.Errorf("create floating port: %w", err)
+	}
+	return port, nil
+}
+
+func (d *Driver) resolveFloatingNetworkID(vdc *bcc.Vdc, m *bcc.Manager) (string, error) {
+	// Best-effort: if there are already external ports in this VDC, reuse their
+	// network ID (it's the external network that has a public IP pool).
+	{
+		var ports []*bcc.Port
+		args := bcc.Arguments{
+			"vdc":         vdc.ID,
+			"filter_type": "external",
+		}
+		if err := m.GetItems("v1/port", args, &ports); err == nil {
+			for _, p := range ports {
+				if p == nil || p.Network == nil {
+					continue
+				}
+				id := strings.TrimSpace(p.Network.ID)
+				if id != "" {
+					return id, nil
+				}
 			}
-			out = append(out, &bcc.FirewallTemplate{ID: webT.ID})
 		}
+	}
 
-		return dedupeFirewallTemplates(out), nil
+	// Fallback: try to locate an external-looking network by name.
+	networks, err := vdc.GetNetworks()
+	if err != nil {
+		return "", fmt.Errorf("list networks: %w", err)
+	}
+	for _, n := range networks {
+		if n == nil {
+			continue
+		}
+		if networkNameLooksExternal(n.Name) && strings.TrimSpace(n.ID) != "" {
+			return strings.TrimSpace(n.ID), nil
+		}
+	}
+
+	return "", errors.New("unable to auto-allocate floating IP: external network not found or not accessible; specify --makecloud-floating-ip to use an existing public IP")
+}
+
+func networkNameLooksExternal(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	hints := []string{"ext", "external", "public", "публич", "интернет", "internet"}
+	for _, h := range hints {
+		if strings.Contains(n, h) {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *Driver) resolveFirewallTemplates(vdc *bcc.Vdc, m *bcc.Manager) ([]*bcc.FirewallTemplate, error) {
+	if len(d.FirewallTemplateIDs) == 0 {
+		return nil, nil
 	}
 
 	res := make([]*bcc.FirewallTemplate, 0, len(d.FirewallTemplateIDs))
@@ -829,34 +897,7 @@ func (d *Driver) resolveFirewallTemplates(vdc *bcc.Vdc, m *bcc.Manager, wantPubl
 		}
 		res = append(res, &bcc.FirewallTemplate{ID: id})
 	}
-	return res, nil
-}
-
-func findFirewallTemplateByNames(templates []*bcc.FirewallTemplate, names []string) *bcc.FirewallTemplate {
-	for _, want := range names {
-		want = strings.TrimSpace(want)
-		if want == "" {
-			continue
-		}
-		for _, ft := range templates {
-			if ft == nil {
-				continue
-			}
-			if firewallNameMatches(ft.Name, want) {
-				return ft
-			}
-		}
-	}
-	return nil
-}
-
-func firewallNameMatches(actual string, want string) bool {
-	a := strings.ToLower(strings.TrimSpace(actual))
-	w := strings.ToLower(strings.TrimSpace(want))
-	if a == "" || w == "" {
-		return false
-	}
-	return a == w || strings.Contains(a, w) || strings.Contains(w, a)
+	return dedupeFirewallTemplates(res), nil
 }
 
 func ensurePortFirewallTemplates(port *bcc.Port, desired []*bcc.FirewallTemplate) error {

@@ -1,0 +1,31 @@
+name: Build and Release Extension Charts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. makecloud-node-driver-0.1.0)"
+        required: true
+        type: string
+  release:
+    types: [released]
+
+defaults:
+  run:
+    shell: bash
+    working-directory: ./
+
+jobs:
+  build-extension-charts:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.release.tag_name, 'makecloud-node-driver-')
+    uses: rancher/dashboard/.github/workflows/build-extension-charts.yml@master
+    permissions:
+      actions: write
+      contents: write
+      deployments: write
+      pages: write
+    with:
+      target_branch: gh-pages
+      tagged_release: ${{ github.event.release.tag_name || inputs.tag }}

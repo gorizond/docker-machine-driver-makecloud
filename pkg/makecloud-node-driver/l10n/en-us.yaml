@@ -3,6 +3,14 @@ cluster:
     makecloud: MakeCloud
   credential:
     makecloud:
+      actions:
+        authenticate: Authenticate
+        edit: Edit auth config
+        addToAllowList: Add to allow list
+      errors:
+        unauthorized: Unauthorized (check token)
+        fetchVdcs: Failed to fetch VDC list
+        notAllowed: "{ hostname } is not present in Node Driver whitelistDomains."
       token:
         label: MakeCloud API token
         placeholder: xxxxxxxx...
@@ -11,6 +19,8 @@ cluster:
         placeholder: https://cp.iteco.cloud
       insecureTLS:
         label: Skip TLS verification (insecure)
+      vdcId:
+        label: VDC
   machineConfig:
     makecloud:
       api:
@@ -33,8 +43,13 @@ cluster:
           label: Storage profile ID
         networkId:
           label: Network ID
+        allocateFloatingIp:
+          label: Allocate a new public IP
         floatingIp:
           label: Floating IP (address or ID)
+        firewallTemplateIds:
+          label: Firewall templates
+          tooltip: If empty, no firewall templates are applied (not recommended). For public IP, include a WEB template to allow inbound traffic.
       resources:
         header: Resources
         cpu:
@@ -52,7 +67,7 @@ cluster:
       advanced:
         header: Advanced
         firewallTemplateIds:
-          label: Firewall template IDs (repeatable)
+          label: Firewall templates
           tooltip: If empty, defaults are applied (egress; WEB on floating IP)
         tags:
           label: Tags (repeatable)
