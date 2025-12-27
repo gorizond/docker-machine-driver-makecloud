@@ -22,7 +22,8 @@ import (
 )
 
 const (
-	DriverName = "makecloud"
+	DriverName        = "makecloud"
+	defaultAPIBaseURL = "https://cp.iteco.cloud"
 )
 
 var (
@@ -84,7 +85,7 @@ func NewDriver(hostName, storePath string) *Driver {
 			SSHUser:     drivers.DefaultSSHUser,
 			SSHPort:     drivers.DefaultSSHPort,
 		},
-		APIBaseURL:      bcc.DefaultBaseURL,
+		APIBaseURL:      defaultAPIBaseURL,
 		CPU:             2,
 		RAMGB:           4,
 		DiskSizeGB:      40,
@@ -107,7 +108,7 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Name:   "makecloud-base-url",
 			Usage:  "MakeCloud API base URL",
 			EnvVar: "MAKECLOUD_BASE_URL",
-			Value:  bcc.DefaultBaseURL,
+			Value:  defaultAPIBaseURL,
 		},
 		mcnflag.BoolFlag{
 			Name:   "makecloud-insecure",
@@ -807,15 +808,11 @@ func (d *Driver) resolveFirewallTemplates(vdc *bcc.Vdc, m *bcc.Manager, wantPubl
 
 		out := []*bcc.FirewallTemplate{{ID: egress.ID}}
 		if wantPublic {
-			sshT := findFirewallTemplateByNames(templates, defaultFirewallSSHNames)
 			webT := findFirewallTemplateByNames(templates, defaultFirewallWebNames)
-			if sshT == nil {
-				return nil, errors.New("default SSH firewall template not found (expected \"Разрешить SSH\"); set --makecloud-firewall-template-id explicitly")
-			}
 			if webT == nil {
 				return nil, errors.New("default WEB firewall template not found (expected \"Разрешить WEB\"); set --makecloud-firewall-template-id explicitly")
 			}
-			out = append(out, &bcc.FirewallTemplate{ID: sshT.ID}, &bcc.FirewallTemplate{ID: webT.ID})
+			out = append(out, &bcc.FirewallTemplate{ID: webT.ID})
 		}
 
 		return dedupeFirewallTemplates(out), nil
