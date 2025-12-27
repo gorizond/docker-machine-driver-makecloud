@@ -34,6 +34,12 @@ spec:
   whitelistDomains: []
 ```
 
+## Rancher UI Extension
+
+UI extension для Rancher Dashboard лежит в `pkg/makecloud-node-driver`.
+
+Локальный запуск Rancher Dashboard с подключением к удалённому Rancher (через прокси) описан в `docs/UI_EXTENSION.md`.
+
 ## Пример использования (docker-machine / rancher-machine)
 
 ```bash

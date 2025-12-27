@@ -1,9 +1,18 @@
 /.idea/
 /.vscode/
 
+/.env
+/.env.*
+
 /bin/
 /dist/
 /artifacts/
+/dist-pkg/
+/node_modules/
+/tmp/
+
+yarn-error.log
+npm-debug.log*
 
 *.exe
 *.test
