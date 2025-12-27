@@ -30,7 +30,7 @@ spec:
   displayName: makecloud
   externalId: ''
   uiUrl: ''
-  url: https://github.com/gorizond/docker-machine-driver-makecloud/releases/download/v0.1.0/docker-machine-driver-makecloud_v0.1.0_linux_amd64.tar.gz
+  url: https://github.com/gorizond/docker-machine-driver-makecloud/releases/download/v0.1.1/docker-machine-driver-makecloud_v0.1.1_linux_amd64.tar.gz
   whitelistDomains: []
 ```
 
