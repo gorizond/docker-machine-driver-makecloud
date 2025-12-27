@@ -25,6 +25,24 @@ const (
 	DriverName = "makecloud"
 )
 
+var (
+	defaultFirewallEgressNames = []string{
+		"Разрешить все исходящие соединения",
+		"По-умолчанию",
+		"По умолчанию",
+		"Default",
+	}
+	defaultFirewallSSHNames = []string{
+		"Разрешить SSH для управление хостом",
+		"Разрешить SSH",
+	}
+	defaultFirewallWebNames = []string{
+		"Разрешить WEB порты, доступные из Интернета",
+		"Разрешить WEB порты",
+		"Разрешить WEB",
+	}
+)
+
 type Driver struct {
 	*drivers.BaseDriver
 
@@ -357,7 +375,7 @@ func (d *Driver) Create() (err error) {
 
 	tags := toTags(d.Tags)
 
-	fwTemplates, err := d.resolveFirewallTemplates(m)
+	fwTemplates, err := d.resolveFirewallTemplates(vdc, m, false)
 	if err != nil {
 		return err
 	}
@@ -437,6 +455,25 @@ func (d *Driver) Create() (err error) {
 		return fmt.Errorf("create vm: %w", err)
 	}
 	d.VMID = vm.ID
+
+	// If a floating IP was requested, ensure security templates are applied to
+	// the floating port too (it controls inbound connectivity from the Internet).
+	if strings.TrimSpace(d.FloatingIP) != "" {
+		desired, derr := d.resolveFirewallTemplates(vdc, m, true)
+		if derr != nil {
+			return derr
+		}
+
+		vmReload, rerr := m.GetVm(vm.ID)
+		if rerr != nil {
+			return fmt.Errorf("reload vm %q after create: %w", vm.ID, rerr)
+		}
+		if vmReload.Floating != nil && vmReload.Floating.ID != "" {
+			if err := ensurePortFirewallTemplates(vmReload.Floating, desired); err != nil {
+				return err
+			}
+		}
+	}
 
 	ip, err := d.waitForIPv4(m, vm.ID)
 	if err != nil {
@@ -756,9 +793,32 @@ func (d *Driver) resolveNetwork(vdc *bcc.Vdc, m *bcc.Manager) (*bcc.Network, err
 	return nil, errors.New("no networks found in VDC")
 }
 
-func (d *Driver) resolveFirewallTemplates(m *bcc.Manager) ([]*bcc.FirewallTemplate, error) {
+func (d *Driver) resolveFirewallTemplates(vdc *bcc.Vdc, m *bcc.Manager, wantPublic bool) ([]*bcc.FirewallTemplate, error) {
 	if len(d.FirewallTemplateIDs) == 0 {
-		return nil, nil
+		templates, err := vdc.GetFirewallTemplates()
+		if err != nil {
+			return nil, fmt.Errorf("list firewall templates: %w", err)
+		}
+
+		egress := findFirewallTemplateByNames(templates, defaultFirewallEgressNames)
+		if egress == nil {
+			return nil, errors.New("default firewall template not found (expected one of: \"По-умолчанию\" / \"Разрешить все исходящие соединения\"); set --makecloud-firewall-template-id explicitly")
+		}
+
+		out := []*bcc.FirewallTemplate{{ID: egress.ID}}
+		if wantPublic {
+			sshT := findFirewallTemplateByNames(templates, defaultFirewallSSHNames)
+			webT := findFirewallTemplateByNames(templates, defaultFirewallWebNames)
+			if sshT == nil {
+				return nil, errors.New("default SSH firewall template not found (expected \"Разрешить SSH\"); set --makecloud-firewall-template-id explicitly")
+			}
+			if webT == nil {
+				return nil, errors.New("default WEB firewall template not found (expected \"Разрешить WEB\"); set --makecloud-firewall-template-id explicitly")
+			}
+			out = append(out, &bcc.FirewallTemplate{ID: sshT.ID}, &bcc.FirewallTemplate{ID: webT.ID})
+		}
+
+		return dedupeFirewallTemplates(out), nil
 	}
 
 	res := make([]*bcc.FirewallTemplate, 0, len(d.FirewallTemplateIDs))
@@ -773,6 +833,120 @@ func (d *Driver) resolveFirewallTemplates(m *bcc.Manager) ([]*bcc.FirewallTempla
 		res = append(res, &bcc.FirewallTemplate{ID: id})
 	}
 	return res, nil
+}
+
+func findFirewallTemplateByNames(templates []*bcc.FirewallTemplate, names []string) *bcc.FirewallTemplate {
+	for _, want := range names {
+		want = strings.TrimSpace(want)
+		if want == "" {
+			continue
+		}
+		for _, ft := range templates {
+			if ft == nil {
+				continue
+			}
+			if firewallNameMatches(ft.Name, want) {
+				return ft
+			}
+		}
+	}
+	return nil
+}
+
+func firewallNameMatches(actual string, want string) bool {
+	a := strings.ToLower(strings.TrimSpace(actual))
+	w := strings.ToLower(strings.TrimSpace(want))
+	if a == "" || w == "" {
+		return false
+	}
+	return a == w || strings.Contains(a, w) || strings.Contains(w, a)
+}
+
+func ensurePortFirewallTemplates(port *bcc.Port, desired []*bcc.FirewallTemplate) error {
+	if port == nil || port.ID == "" || len(desired) == 0 {
+		return nil
+	}
+	if hasAllFirewallTemplates(port.FirewallTemplates, desired) {
+		return nil
+	}
+	merged := mergeFirewallTemplates(port.FirewallTemplates, desired)
+	if err := port.UpdateFirewall(merged); err != nil {
+		return fmt.Errorf("update firewall templates for port %q: %w", port.ID, err)
+	}
+	return nil
+}
+
+func hasAllFirewallTemplates(existing []*bcc.FirewallTemplate, desired []*bcc.FirewallTemplate) bool {
+	if len(desired) == 0 {
+		return true
+	}
+	existingIDs := map[string]bool{}
+	for _, ft := range existing {
+		if ft == nil {
+			continue
+		}
+		id := strings.TrimSpace(ft.ID)
+		if id == "" {
+			continue
+		}
+		existingIDs[id] = true
+	}
+	for _, ft := range desired {
+		if ft == nil {
+			continue
+		}
+		id := strings.TrimSpace(ft.ID)
+		if id == "" {
+			continue
+		}
+		if !existingIDs[id] {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeFirewallTemplates(existing []*bcc.FirewallTemplate, desired []*bcc.FirewallTemplate) []*bcc.FirewallTemplate {
+	out := make([]*bcc.FirewallTemplate, 0, len(existing)+len(desired))
+	seen := map[string]bool{}
+
+	add := func(ft *bcc.FirewallTemplate) {
+		if ft == nil {
+			return
+		}
+		id := strings.TrimSpace(ft.ID)
+		if id == "" || seen[id] {
+			return
+		}
+		out = append(out, &bcc.FirewallTemplate{ID: id})
+		seen[id] = true
+	}
+
+	for _, ft := range desired {
+		add(ft)
+	}
+	for _, ft := range existing {
+		add(ft)
+	}
+
+	return out
+}
+
+func dedupeFirewallTemplates(in []*bcc.FirewallTemplate) []*bcc.FirewallTemplate {
+	out := make([]*bcc.FirewallTemplate, 0, len(in))
+	seen := map[string]bool{}
+	for _, ft := range in {
+		if ft == nil {
+			continue
+		}
+		id := strings.TrimSpace(ft.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		out = append(out, &bcc.FirewallTemplate{ID: id})
+		seen[id] = true
+	}
+	return out
 }
 
 func (d *Driver) resolveMetadata(template *bcc.Template, sshPublicKey string) ([]*bcc.VmMetadata, error) {

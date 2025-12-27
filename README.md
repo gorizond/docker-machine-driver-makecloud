@@ -37,7 +37,7 @@ docker-machine create -d makecloud \
 - `--makecloud-ram` — RAM в GiB (строка, допускает float)
 - `--makecloud-disk-size` — root disk size в GiB
 - `--makecloud-network-id` — сеть (если не задано, берётся default сеть VDC)
-- `--makecloud-firewall-template-id` — шаблоны FW, которые прикрепляются к порту VM (обычно нужен доступ по SSH)
+- `--makecloud-firewall-template-id` — шаблоны FW, которые прикрепляются к порту VM (обычно нужен доступ по SSH). Если не задано, драйвер пытается применить дефолтный шаблон (`По-умолчанию` / `Разрешить все исходящие соединения`).
 - `--makecloud-floating-ip` — floating IP (адрес или ID). Если задан, драйвер предпочитает его для подключения.
 - `--makecloud-user-data` — cloud-init user-data (строкой, `@path` или просто `path`)
 - `--makecloud-no-inject-ssh-key` — отключить автодобавление SSH ключа через cloud-init (по умолчанию включено)
@@ -47,3 +47,4 @@ docker-machine create -d makecloud \
 
 - Драйвер выбирает IP в таком порядке: `floating.ip_address` → первый `port.ip_address`.
 - Если VM создаётся только во внутренней сети без floating IP и без маршрутизации наружу — `docker-machine`/`rancher-machine` не смогут подключиться по SSH.
+- При использовании `--makecloud-floating-ip` драйвер также пытается применить на floating-порту шаблоны FW для доступа по SSH/WEB (если они есть в VDC: `Разрешить SSH`, `Разрешить WEB`).
