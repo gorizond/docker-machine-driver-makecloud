@@ -560,7 +560,16 @@ func (d *Driver) Remove() error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	timeoutSecs := d.WaitTimeoutSecs
+	if timeoutSecs <= 0 {
+		timeoutSecs = 600
+	}
+	minRemoveSecs := bcc.LockTimeout + 60
+	if timeoutSecs < minRemoveSecs {
+		timeoutSecs = minRemoveSecs
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
 	m, err := d.manager(ctx)
 	if err != nil {
@@ -568,26 +577,76 @@ func (d *Driver) Remove() error {
 	}
 
 	if d.VMID != "" {
-		vm, err := m.GetVm(d.VMID)
-		if err == nil {
-			if err := vm.Delete(); err != nil && !isNotFound(err) {
-				return err
-			}
-		} else if !isNotFound(err) {
+		if err := d.removeVM(ctx, m, d.VMID); err != nil {
 			return err
 		}
+		d.VMID = ""
 	}
 
 	if d.PortID != "" {
-		port, err := m.GetPort(d.PortID)
-		if err == nil {
-			if err := port.Delete(); err != nil && !isNotFound(err) {
-				return err
-			}
+		if err := d.removePort(ctx, m, d.PortID); err != nil {
+			return err
 		}
+		d.PortID = ""
 	}
 
 	return nil
+}
+
+func (d *Driver) removeVM(ctx context.Context, m *bcc.Manager, vmID string) error {
+	vm, err := m.GetVm(vmID)
+	if err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	if err := vm.Delete(); err != nil && !isNotFound(err) {
+		return err
+	}
+
+	return waitForGone(ctx, 5*time.Second, func() error {
+		_, err := m.GetVm(vmID)
+		return err
+	})
+}
+
+func (d *Driver) removePort(ctx context.Context, m *bcc.Manager, portID string) error {
+	p, err := m.GetPort(portID)
+	if err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	if err := p.Delete(); err != nil && !isNotFound(err) {
+		return err
+	}
+
+	return waitForGone(ctx, 3*time.Second, func() error {
+		_, err := m.GetPort(portID)
+		return err
+	})
+}
+
+func waitForGone(ctx context.Context, poll time.Duration, check func() error) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		err := check()
+		if err != nil {
+			if isNotFound(err) {
+				return nil
+			}
+			return err
+		}
+
+		time.Sleep(poll)
+	}
 }
 
 func (d *Driver) GetIP() (string, error) {
