@@ -49,7 +49,7 @@ cluster:
           label: Floating IP (address or ID)
         firewallTemplateIds:
           label: Firewall templates
-          tooltip: If empty, no firewall templates are applied (not recommended). For public IP, include a WEB template to allow inbound traffic.
+          tooltip: If empty, no firewall templates are applied (not recommended). For public IP, include WEB (80/443) and Docker Machine (2376) templates; add SSH (22) if you need remote access.
       resources:
         header: Resources
         cpu:
@@ -68,7 +68,7 @@ cluster:
         header: Advanced
         firewallTemplateIds:
           label: Firewall templates
-          tooltip: If empty, defaults are applied (egress; WEB on floating IP)
+          tooltip: If empty, defaults are applied (egress; WEB + Docker Machine (2376) on floating IP)
         tags:
           label: Tags (repeatable)
         templateField:

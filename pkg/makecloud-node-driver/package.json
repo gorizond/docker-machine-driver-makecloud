@@ -1,7 +1,7 @@
 {
   "name": "makecloud-node-driver",
   "description": "Node Driver for MakeCloud (BCC).",
-  "version": "0.1.4",
+  "version": "0.1.9",
   "private": false,
   "rancher": {
     "annotations": {

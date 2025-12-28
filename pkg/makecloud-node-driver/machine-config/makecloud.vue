@@ -57,6 +57,8 @@ export default {
       floatingPorts: null,
       firewallTemplates: null,
 
+      dockerFirewallEnsurePromise: null,
+
       error: "",
       errorAllowHost: false,
       allowBusy: false,
@@ -289,7 +291,150 @@ export default {
   },
 
   methods: {
-    applyDefaultFirewallTemplates() {
+    sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    },
+
+    async requestMakecloud(method, path, query = {}, data) {
+      const host = this.makecloudHost;
+      const params = new URLSearchParams(query);
+      const url = params.toString()
+        ? `/meta/proxy/${host}/${path}?${params.toString()}`
+        : `/meta/proxy/${host}/${path}`;
+
+      const headers = {
+        Accept: "application/json",
+        "X-API-Auth-Header": `Bearer ${this.credential.token}`,
+      };
+      if (data !== undefined) {
+        headers["Content-Type"] = "application/json";
+      }
+
+      return await this.$store.dispatch(
+        "management/request",
+        {
+          method,
+          url,
+          headers,
+          data,
+          redirectUnauthorized: false,
+        },
+        { root: true }
+      );
+    },
+
+    async ensureDockerFirewallTemplate() {
+      if (!this.hasApiAccess || !Array.isArray(this.firewallTemplates)) {
+        return null;
+      }
+
+      const targetName = "Docker Machine (2376)";
+      const targetLower = targetName.toLowerCase().trim();
+
+      const findExisting = () =>
+        (this.firewallTemplates || []).find(
+          (ft) =>
+            ft &&
+            (ft.name || "").toString().toLowerCase().trim() === targetLower
+        );
+
+      const existing = findExisting();
+      if (existing?.id) {
+        return existing;
+      }
+
+      if (this.dockerFirewallEnsurePromise) {
+        return await this.dockerFirewallEnsurePromise;
+      }
+
+      this.dockerFirewallEnsurePromise = (async () => {
+        try {
+          const created = await this.requestMakecloud(
+            "POST",
+            "v1/firewall",
+            {},
+            {
+              name: targetName,
+              vdc: this.credential.vdcId,
+              tags: [],
+            }
+          );
+
+          const templateId = created?.id || "";
+          if (!templateId) {
+            return null;
+          }
+
+          const rules = await this.fetchFromMakecloud(
+            `v1/firewall/${templateId}/rule`
+          );
+          const ruleList = Array.isArray(rules)
+            ? rules
+            : Array.isArray(rules?.items)
+            ? rules.items
+            : [];
+
+          const has2376 = ruleList.some(
+            (r) =>
+              r &&
+              (r.protocol || "").toString().toLowerCase() === "tcp" &&
+              (r.direction || "").toString().toLowerCase() === "ingress" &&
+              Number(r.dst_port_range_min) === 2376
+          );
+
+          if (!has2376) {
+            const payload = {
+              name: "Docker Machine API",
+              direction: "ingress",
+              protocol: "tcp",
+              dst_port_range_min: 2376,
+            };
+
+            let lastErr = null;
+            for (let attempt = 0; attempt < 6; attempt += 1) {
+              try {
+                await this.requestMakecloud(
+                  "POST",
+                  `v1/firewall/${templateId}/rule`,
+                  {},
+                  payload
+                );
+                lastErr = null;
+                break;
+              } catch (e) {
+                lastErr = e;
+                if (e?._status === 409) {
+                  await this.sleep(500 * (attempt + 1));
+                  continue;
+                }
+                break;
+              }
+            }
+
+            if (lastErr) {
+              // eslint-disable-next-line no-console
+              console.warn(
+                "Failed to create Docker Machine firewall rule",
+                lastErr
+              );
+            }
+          }
+
+          await this.fetchFirewallTemplates();
+          return findExisting() || created;
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn("Failed to ensure Docker Machine firewall template", e);
+          return null;
+        } finally {
+          this.dockerFirewallEnsurePromise = null;
+        }
+      })();
+
+      return await this.dockerFirewallEnsurePromise;
+    },
+
+    async applyDefaultFirewallTemplates() {
       if (!this.hasCredential || !Array.isArray(this.firewallTemplates)) {
         return;
       }
@@ -309,6 +454,7 @@ export default {
         "Разрешить WEB порты",
         "Разрешить WEB",
       ];
+      const dockerNames = ["Docker Machine (2376)", "Docker Machine", "docker"];
 
       const findByNames = (names) => {
         for (const want of names) {
@@ -335,9 +481,14 @@ export default {
 
       const egress = findByNames(egressNames);
       const web = findByNames(webNames);
+      let docker = findByNames(dockerNames);
       const wantPublic =
         !!this.value.allocateFloatingIp ||
         (this.value.floatingIp || "").toString().trim() !== "";
+
+      if (wantPublic && !docker) {
+        docker = await this.ensureDockerFirewallTemplate();
+      }
 
       const set = (ids) => {
         const uniq = Array.from(
@@ -356,23 +507,33 @@ export default {
         if (wantPublic && web?.id) {
           ids.push(web.id);
         }
+        if (wantPublic && docker?.id) {
+          ids.push(docker.id);
+        }
         if (ids.length > 0) {
           set(ids);
         }
         return;
       }
 
-      // If we previously auto-selected only egress, and user later enabled public IP,
-      // auto-add WEB template once.
-      if (
-        wantPublic &&
-        web?.id &&
-        !current.includes(web.id) &&
-        egress?.id &&
-        current.length === 1 &&
-        current[0] === egress.id
-      ) {
-        set([egress.id, web.id]);
+      const hasOnlyAutoSelectedDefaults =
+        !!egress?.id &&
+        current.includes(egress.id) &&
+        current.every((id) => id === egress.id || (!!web?.id && id === web.id));
+
+      // If we previously auto-selected defaults and user later enabled public IP,
+      // auto-add WEB and Docker API templates once.
+      if (wantPublic && hasOnlyAutoSelectedDefaults) {
+        const ids = [...current];
+        if (web?.id && !ids.includes(web.id)) {
+          ids.push(web.id);
+        }
+        if (docker?.id && !ids.includes(docker.id)) {
+          ids.push(docker.id);
+        }
+        if (ids.length !== current.length) {
+          set(ids);
+        }
       }
     },
 
