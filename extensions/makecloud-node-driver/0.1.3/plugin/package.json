@@ -1,0 +1,19 @@
+{
+  "name": "makecloud-node-driver",
+  "description": "Node Driver for MakeCloud (BCC).",
+  "version": "0.1.3",
+  "private": false,
+  "rancher": true,
+  "engines": {
+    "node": ">=16"
+  },
+  "devDependencies": {
+    "@vue/cli-plugin-babel": "~5.0.0",
+    "@vue/cli-service": "~5.0.0",
+    "@vue/cli-plugin-typescript": "~5.0.0"
+  },
+  "files": [
+    "**/*"
+  ],
+  "main": "makecloud-node-driver-0.1.3.umd.min.js"
+}

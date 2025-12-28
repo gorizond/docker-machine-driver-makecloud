@@ -11,6 +11,25 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
     apiVersion: v2
+    appVersion: 0.1.3
+    created: "2025-12-28T11:40:12.137116493Z"
+    description: Node Driver for MakeCloud (BCC).
+    digest: c505b3800232a74c787f9c1ff6044aa4235e0d2deb6fadb512d3b6026d584237
+    name: makecloud-node-driver
+    type: application
+    urls:
+    - assets/makecloud-node-driver/makecloud-node-driver-0.1.3.tgz
+    version: 0.1.3
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
+    apiVersion: v2
     appVersion: 0.1.2
     created: "2025-12-27T21:44:37.555445494Z"
     description: Node Driver for MakeCloud (BCC).
@@ -20,4 +39,4 @@ entries:
     urls:
     - assets/makecloud-node-driver/makecloud-node-driver-0.1.2.tgz
     version: 0.1.2
-generated: "2025-12-27T21:44:37.554398199Z"
+generated: "2025-12-28T11:40:12.136021518Z"
