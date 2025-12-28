@@ -93,7 +93,7 @@ export default {
       this.value.firewallTemplateId = [];
     }
     this.value.tags = this.value.tags ?? [];
-    this.value.metadata = this.value.metadata ?? [];
+    this.value.templateField = this.value.templateField ?? [];
     this.value.userData = this.value.userData ?? "";
     this.value.noInjectSshKey = this.value.noInjectSshKey ?? false;
     this.value.waitTimeout = (this.value.waitTimeout ?? "").toString() || "600";
@@ -1011,13 +1011,13 @@ export default {
           type="text"
           :mode="mode"
           :disabled="disabled"
-          :value="(value.metadata || []).join('\\n')"
+          :value="(value.templateField || []).join('\\n')"
           @change="
             (e) => {
-              setStringArray('metadata', e.target.value);
+              setStringArray('templateField', e.target.value);
             }
           "
-          label-key="cluster.machineConfig.makecloud.advanced.metadata.label"
+          label-key="cluster.machineConfig.makecloud.advanced.templateField.label"
         />
       </div>
 

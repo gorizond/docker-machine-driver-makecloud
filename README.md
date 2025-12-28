@@ -31,7 +31,7 @@ spec:
   displayName: makecloud
   externalId: ''
   uiUrl: ''
-  url: https://github.com/gorizond/docker-machine-driver-makecloud/releases/download/v0.1.3/docker-machine-driver-makecloud_v0.1.3_linux_amd64.tar.gz
+  url: https://github.com/gorizond/docker-machine-driver-makecloud/releases/download/v0.1.4/docker-machine-driver-makecloud_v0.1.4_linux_amd64.tar.gz
   whitelistDomains: []
 ```
 
@@ -90,7 +90,7 @@ docker-machine create -d makecloud \
 - `--makecloud-allocate-floating-ip` — создать новый public IP (floating port) и привязать к VM; будет удалён при `docker-machine rm`. Игнорируется, если задан `--makecloud-floating-ip`.
 - `--makecloud-user-data` — cloud-init user-data (строкой, `@path` или просто `path`)
 - `--makecloud-no-inject-ssh-key` — отключить автодобавление SSH ключа через cloud-init (по умолчанию включено)
-- `--makecloud-metadata` — значения template fields в формате `key=value` (ключ может быть field ID / system_alias / name; повторяемый)
+- `--makecloud-template-field` — значения template fields в формате `key=value` (ключ может быть field ID / system_alias / name; повторяемый)
 
 ## Примечания по доступности
 

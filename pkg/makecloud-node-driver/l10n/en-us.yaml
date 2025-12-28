@@ -71,7 +71,7 @@ cluster:
           tooltip: If empty, defaults are applied (egress; WEB on floating IP)
         tags:
           label: Tags (repeatable)
-        metadata:
+        templateField:
           label: Template fields (key=value, repeatable)
         userData:
           label: Cloud-init user-data

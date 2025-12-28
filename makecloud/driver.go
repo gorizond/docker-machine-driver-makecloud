@@ -55,7 +55,7 @@ type Driver struct {
 	RAMGB            float64 `json:"ramGb,omitempty"`
 
 	Tags            []string `json:"tags,omitempty"`
-	Metadata        []string `json:"metadata,omitempty"`
+	TemplateField   []string `json:"templateField,omitempty"`
 	UserData        string   `json:"userData,omitempty"`
 	NoInjectSSHKey  bool     `json:"noInjectSshKey,omitempty"`
 	WaitTimeoutSecs int      `json:"waitTimeoutSecs,omitempty"`
@@ -181,9 +181,9 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			EnvVar: "MAKECLOUD_TAGS",
 		},
 		mcnflag.StringSliceFlag{
-			Name:   "makecloud-metadata",
+			Name:   "makecloud-template-field",
 			Usage:  "Template fields as key=value (key can be field ID, system_alias or name; repeatable)",
-			EnvVar: "MAKECLOUD_METADATA",
+			EnvVar: "MAKECLOUD_TEMPLATE_FIELD",
 		},
 		mcnflag.StringFlag{
 			Name:   "makecloud-user-data",
@@ -248,7 +248,7 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	d.RAMGB = ram
 
 	d.Tags = opts.StringSlice("makecloud-tags")
-	d.Metadata = opts.StringSlice("makecloud-metadata")
+	d.TemplateField = opts.StringSlice("makecloud-template-field")
 	d.UserData = opts.String("makecloud-user-data")
 	d.NoInjectSSHKey = opts.Bool("makecloud-no-inject-ssh-key")
 	d.WaitTimeoutSecs = opts.Int("makecloud-wait-timeout")
@@ -988,7 +988,7 @@ func dedupeFirewallTemplates(in []*bcc.FirewallTemplate) []*bcc.FirewallTemplate
 }
 
 func (d *Driver) resolveMetadata(template *bcc.Template, sshPublicKey string) ([]*bcc.VmMetadata, error) {
-	if len(d.Metadata) == 0 {
+	if len(d.TemplateField) == 0 {
 		return nil, nil
 	}
 
@@ -1000,10 +1000,10 @@ func (d *Driver) resolveMetadata(template *bcc.Template, sshPublicKey string) ([
 	_ = sshPublicKey
 
 	values := map[string]string{}
-	for _, pair := range d.Metadata {
+	for _, pair := range d.TemplateField {
 		k, v, err := splitKeyValue(pair)
 		if err != nil {
-			return nil, fmt.Errorf("invalid makecloud-metadata value %q: %w", pair, err)
+			return nil, fmt.Errorf("invalid makecloud-template-field value %q: %w", pair, err)
 		}
 		values[k] = v
 	}
