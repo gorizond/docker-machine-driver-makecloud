@@ -1,0 +1,30 @@
+nameOverride: ""
+fullnameOverride: ""
+plugin:
+  enabled: true
+  versionOverride: ""
+  endpoint: >-
+    https://raw.githubusercontent.com/gorizond/docker-machine-driver-makecloud/gh-pages/extensions/makecloud-node-driver/0.1.9
+  compressedEndpoint: >-
+    https://raw.githubusercontent.com/gorizond/docker-machine-driver-makecloud/gh-pages/extensions/makecloud-node-driver/0.1.9.tgz
+  noCache: false
+  noAuth: false
+  metadata:
+    catalog.cattle.io/rancher-version: ">= 2.10.0"
+    catalog.cattle.io/ui-extensions-version: ">= 3.0.0 < 4.0.0"
+nodeDriver:
+  enabled: true
+  name: makecloud
+  publicCredentialFields: baseUrl,vdcId
+  privateCredentialFields: token
+  active: true
+  addCloudCredential: true
+  builtin: false
+  checksum: ""
+  description: ""
+  displayName: makecloud
+  externalId: ""
+  uiUrl: ""
+  url: ""
+  versionOverride: ""
+  whitelistDomains: []
