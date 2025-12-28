@@ -17,27 +17,47 @@ func buildFinalUserData(raw string, sshPublicKey string, sshUser string, disable
 		return "", err
 	}
 
-	if disableInject {
+	rancherBootstrap := needsRancherBootstrap(raw)
+
+	// When neither Rancher bootstrap nor SSH injection is requested, pass through raw user-data.
+	if disableInject && !rancherBootstrap {
 		return raw, nil
 	}
 
-	inject := buildSSHInjectCloudConfig(sshPublicKey, sshUser)
-	if raw == "" {
-		return inject, nil
-	}
-
-	parts := []userDataPart{
-		{
+	var parts []userDataPart
+	if raw != "" {
+		parts = append(parts, userDataPart{
 			contentType: detectCloudInitContentType(raw),
 			content:     raw,
-		},
-		{
-			contentType: "text/cloud-config",
-			content:     inject,
-		},
+		})
 	}
 
-	return buildMultipartCloudInit(parts), nil
+	if rancherBootstrap {
+		parts = append(parts, userDataPart{
+			contentType: "text/cloud-config",
+			content:     buildRancherBootstrapCloudConfig(),
+		})
+	}
+
+	if !disableInject {
+		inject := buildSSHInjectCloudConfig(sshPublicKey, sshUser)
+		if raw == "" && !rancherBootstrap {
+			return inject, nil
+		}
+		parts = append(parts, userDataPart{
+			contentType: "text/cloud-config",
+			content:     inject,
+		})
+	}
+
+	switch len(parts) {
+	case 0:
+		return "", nil
+	case 1:
+		return parts[0].content, nil
+	default:
+		return buildMultipartCloudInit(parts), nil
+	}
 }
 
 func loadUserData(value string) (string, error) {
@@ -72,6 +92,46 @@ func detectCloudInitContentType(content string) string {
 	default:
 		return "text/plain"
 	}
+}
+
+func needsRancherBootstrap(raw string) bool {
+	// Rancher machine provisioning injects a cloud-config that writes the install
+	// script into /usr/local/custom_script/install.sh. On MakeCloud the floating
+	// IP is NATed, and using it as the Kubernetes apiserver advertise address
+	// breaks in-cluster access to the kubernetes service (10.43.0.1:443). We fix
+	// both issues by:
+	// 1) forcing advertise-address/node-ip to the VM private IP at boot,
+	// 2) executing the install script once if it exists and system-agent is not installed yet.
+	return strings.Contains(raw, "/usr/local/custom_script/install.sh")
+}
+
+func buildRancherBootstrapCloudConfig() string {
+	return `#cloud-config
+runcmd:
+  - |
+      set -eu
+
+      # Prefer the primary private IPv4 of the VM. Floating IPs are typically
+      # NATed and not reachable from inside the guest, so they must not be used
+      # for the apiserver advertise address.
+      private_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i==\"src\") {print $(i+1); exit}}' || true)"
+      if [ -z "${private_ip}" ]; then
+        private_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+      fi
+
+      if [ -n "${private_ip}" ]; then
+        mkdir -p /etc/rancher/rke2/config.yaml.d
+        cat >/etc/rancher/rke2/config.yaml.d/99-makecloud.yaml <<EOF
+advertise-address: ${private_ip}
+node-ip:
+  - ${private_ip}
+EOF
+      fi
+
+      if [ -f /usr/local/custom_script/install.sh ] && [ ! -f /etc/systemd/system/rancher-system-agent.service ]; then
+        sh /usr/local/custom_script/install.sh >/var/log/rancher-custom-install.log 2>&1 || true
+      fi
+`
 }
 
 func buildSSHInjectCloudConfig(sshPublicKey string, sshUser string) string {
