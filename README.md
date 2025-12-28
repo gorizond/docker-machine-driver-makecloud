@@ -31,13 +31,15 @@ spec:
   displayName: makecloud
   externalId: ''
   uiUrl: ''
-  url: https://github.com/gorizond/docker-machine-driver-makecloud/releases/download/v0.1.2/docker-machine-driver-makecloud_v0.1.2_linux_amd64.tar.gz
+  url: https://github.com/gorizond/docker-machine-driver-makecloud/releases/download/v0.1.3/docker-machine-driver-makecloud_v0.1.3_linux_amd64.tar.gz
   whitelistDomains: []
 ```
 
 ## Rancher UI Extension
 
 UI extension для Rancher Dashboard лежит в `pkg/makecloud-node-driver`.
+
+Chart extension также создаёт `NodeDriver` `makecloud` (по умолчанию включено). Если нужно отключить — установи с `--set nodeDriver.enabled=false`.
 
 ### Dev (локально через прокси на удалённый Rancher)
 

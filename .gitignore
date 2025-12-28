@@ -10,6 +10,10 @@
 /dist-pkg/
 /node_modules/
 /tmp/
+/assets/
+/charts/
+/extensions/
+/index.yaml
 
 yarn-error.log
 npm-debug.log*
