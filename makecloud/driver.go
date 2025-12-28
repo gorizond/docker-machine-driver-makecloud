@@ -395,7 +395,7 @@ func (d *Driver) Create() (err error) {
 			return
 		}
 
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		cleanupManager, mErr := d.manager(cleanupCtx)
 		if mErr != nil {
@@ -403,24 +403,64 @@ func (d *Driver) Create() (err error) {
 			return
 		}
 
+		deletePort := func(id string) {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				return
+			}
+
+			deadline := time.Now().Add(90 * time.Second)
+			for time.Now().Before(deadline) {
+				p, pErr := cleanupManager.GetPort(id)
+				if pErr != nil {
+					if isNotFound(pErr) {
+						return
+					}
+					time.Sleep(2 * time.Second)
+					continue
+				}
+				if pErr := p.Delete(); pErr == nil || isNotFound(pErr) {
+					return
+				}
+				time.Sleep(2 * time.Second)
+			}
+
+			// Best-effort fallback for stuck ports.
+			if p, pErr := cleanupManager.GetPort(id); pErr == nil {
+				_ = p.ForceDelete()
+			}
+		}
+
 		if d.VMID != "" {
-			vm, vmErr := cleanupManager.GetVm(d.VMID)
-			if vmErr == nil {
-				_ = vm.Delete()
+			id := d.VMID
+			deleteDeadline := time.Now().Add(90 * time.Second)
+			for time.Now().Before(deleteDeadline) {
+				vm, vmErr := cleanupManager.GetVm(id)
+				if vmErr != nil {
+					if isNotFound(vmErr) {
+						break
+					}
+					time.Sleep(2 * time.Second)
+					continue
+				}
+				if vmErr := vm.Delete(); vmErr == nil || isNotFound(vmErr) {
+					break
+				}
+				time.Sleep(2 * time.Second)
+			}
+
+			deadline := time.Now().Add(120 * time.Second)
+			for time.Now().Before(deadline) {
+				_, vmErr := cleanupManager.GetVm(id)
+				if vmErr != nil && isNotFound(vmErr) {
+					break
+				}
+				time.Sleep(3 * time.Second)
 			}
 		}
-		if d.PortID != "" {
-			p, pErr := cleanupManager.GetPort(d.PortID)
-			if pErr == nil {
-				_ = p.Delete()
-			}
-		}
-		if d.AllocatedFloatingID != "" {
-			p, pErr := cleanupManager.GetPort(d.AllocatedFloatingID)
-			if pErr == nil {
-				_ = p.Delete()
-			}
-		}
+
+		deletePort(d.PortID)
+		deletePort(d.AllocatedFloatingID)
 	}()
 
 	disk := &bcc.Disk{
@@ -453,9 +493,32 @@ func (d *Driver) Create() (err error) {
 	allocateFloating := d.AllocateFloatingIP && floatingRequested == ""
 	if floatingRequested != "" {
 		if net.ParseIP(floatingRequested) != nil {
-			vm.Floating = &bcc.Port{IpAddress: &floatingRequested}
+			// Try to resolve to a port ID to apply firewall templates before the port
+			// is attached to the VM. If we can't resolve it (permissions, not found),
+			// fall back to passing the IP address to the API.
+			if p, rerr := d.findFloatingPortByIP(vdc, m, floatingRequested); rerr == nil && p != nil && strings.TrimSpace(p.ID) != "" {
+				if p.Connected != nil && strings.TrimSpace(p.Connected.ID) != "" {
+					return fmt.Errorf("floating IP %q is already attached to %s %q", floatingRequested, p.Connected.Type, p.Connected.Name)
+				}
+				if err := ensurePortFirewallTemplates(p, fwTemplates); err != nil {
+					return err
+				}
+				vm.Floating = &bcc.Port{ID: p.ID}
+			} else {
+				vm.Floating = &bcc.Port{IpAddress: &floatingRequested}
+			}
 		} else {
-			vm.Floating = &bcc.Port{ID: floatingRequested}
+			p, rerr := m.GetPort(floatingRequested)
+			if rerr != nil {
+				return fmt.Errorf("get floating port %q: %w", floatingRequested, rerr)
+			}
+			if p.Connected != nil && strings.TrimSpace(p.Connected.ID) != "" {
+				return fmt.Errorf("floating port %q is already attached to %s %q", p.ID, p.Connected.Type, p.Connected.Name)
+			}
+			if err := ensurePortFirewallTemplates(p, fwTemplates); err != nil {
+				return err
+			}
+			vm.Floating = &bcc.Port{ID: p.ID}
 		}
 	} else if allocateFloating {
 		fport, ferr := d.allocateFloatingPort(vdc, m, tags)
@@ -463,6 +526,9 @@ func (d *Driver) Create() (err error) {
 			return ferr
 		}
 		d.AllocatedFloatingID = fport.ID
+		if err := ensurePortFirewallTemplates(fport, fwTemplates); err != nil {
+			return err
+		}
 		vm.Floating = &bcc.Port{ID: fport.ID}
 	}
 
@@ -470,25 +536,6 @@ func (d *Driver) Create() (err error) {
 		return fmt.Errorf("create vm: %w", err)
 	}
 	d.VMID = vm.ID
-
-	// If a floating IP was requested, ensure security templates are applied to
-	// the floating port too (it controls inbound connectivity from the Internet).
-	if floatingRequested != "" || allocateFloating {
-		desired, derr := d.resolveFirewallTemplates(vdc, m)
-		if derr != nil {
-			return derr
-		}
-
-		vmReload, rerr := m.GetVm(vm.ID)
-		if rerr != nil {
-			return fmt.Errorf("reload vm %q after create: %w", vm.ID, rerr)
-		}
-		if vmReload.Floating != nil && vmReload.Floating.ID != "" {
-			if err := ensurePortFirewallTemplates(vmReload.Floating, desired); err != nil {
-				return err
-			}
-		}
-	}
 
 	ip, err := d.waitForIPv4(m, vm.ID)
 	if err != nil {
@@ -900,6 +947,35 @@ func (d *Driver) findReusableFloatingPort(vdc *bcc.Vdc, m *bcc.Manager) (*bcc.Po
 		}
 	}
 	return nil, errors.New("no free floating IPs found to reuse")
+}
+
+func (d *Driver) findFloatingPortByIP(vdc *bcc.Vdc, m *bcc.Manager, ip string) (*bcc.Port, error) {
+	if vdc == nil {
+		return nil, errors.New("vdc is nil")
+	}
+	if m == nil {
+		return nil, errors.New("manager is nil")
+	}
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return nil, errors.New("ip is empty")
+	}
+
+	ports, err := vdc.GetPorts(bcc.Arguments{"filter_type": "external"})
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range ports {
+		if p == nil || strings.TrimSpace(p.ID) == "" || p.IpAddress == nil {
+			continue
+		}
+		if strings.TrimSpace(*p.IpAddress) != ip {
+			continue
+		}
+		return m.GetPort(p.ID)
+	}
+
+	return nil, fmt.Errorf("floating IP %q not found in VDC %q", ip, vdc.ID)
 }
 
 func (d *Driver) floatingNetworkCandidates(vdc *bcc.Vdc, m *bcc.Manager) ([]string, error) {
