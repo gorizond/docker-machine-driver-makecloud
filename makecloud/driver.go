@@ -493,15 +493,12 @@ func (d *Driver) Create() (err error) {
 	allocateFloating := d.AllocateFloatingIP && floatingRequested == ""
 	if floatingRequested != "" {
 		if net.ParseIP(floatingRequested) != nil {
-			// Try to resolve to a port ID to apply firewall templates before the port
-			// is attached to the VM. If we can't resolve it (permissions, not found),
+			// Try to resolve to a port ID to validate that it's not already attached
+			// and to attach by ID. If we can't resolve it (permissions, not found),
 			// fall back to passing the IP address to the API.
 			if p, rerr := d.findFloatingPortByIP(vdc, m, floatingRequested); rerr == nil && p != nil && strings.TrimSpace(p.ID) != "" {
 				if p.Connected != nil && strings.TrimSpace(p.Connected.ID) != "" {
 					return fmt.Errorf("floating IP %q is already attached to %s %q", floatingRequested, p.Connected.Type, p.Connected.Name)
-				}
-				if err := ensurePortFirewallTemplates(p, fwTemplates); err != nil {
-					return err
 				}
 				vm.Floating = &bcc.Port{ID: p.ID}
 			} else {
@@ -515,9 +512,6 @@ func (d *Driver) Create() (err error) {
 			if p.Connected != nil && strings.TrimSpace(p.Connected.ID) != "" {
 				return fmt.Errorf("floating port %q is already attached to %s %q", p.ID, p.Connected.Type, p.Connected.Name)
 			}
-			if err := ensurePortFirewallTemplates(p, fwTemplates); err != nil {
-				return err
-			}
 			vm.Floating = &bcc.Port{ID: p.ID}
 		}
 	} else if allocateFloating {
@@ -526,9 +520,6 @@ func (d *Driver) Create() (err error) {
 			return ferr
 		}
 		d.AllocatedFloatingID = fport.ID
-		if err := ensurePortFirewallTemplates(fport, fwTemplates); err != nil {
-			return err
-		}
 		vm.Floating = &bcc.Port{ID: fport.ID}
 	}
 
@@ -1240,76 +1231,6 @@ func (d *Driver) resolveFirewallTemplates(vdc *bcc.Vdc, m *bcc.Manager) ([]*bcc.
 		res = append(res, &bcc.FirewallTemplate{ID: id})
 	}
 	return dedupeFirewallTemplates(res), nil
-}
-
-func ensurePortFirewallTemplates(port *bcc.Port, desired []*bcc.FirewallTemplate) error {
-	if port == nil || port.ID == "" || len(desired) == 0 {
-		return nil
-	}
-	if hasAllFirewallTemplates(port.FirewallTemplates, desired) {
-		return nil
-	}
-	merged := mergeFirewallTemplates(port.FirewallTemplates, desired)
-	if err := port.UpdateFirewall(merged); err != nil {
-		return fmt.Errorf("update firewall templates for port %q: %w", port.ID, err)
-	}
-	return nil
-}
-
-func hasAllFirewallTemplates(existing []*bcc.FirewallTemplate, desired []*bcc.FirewallTemplate) bool {
-	if len(desired) == 0 {
-		return true
-	}
-	existingIDs := map[string]bool{}
-	for _, ft := range existing {
-		if ft == nil {
-			continue
-		}
-		id := strings.TrimSpace(ft.ID)
-		if id == "" {
-			continue
-		}
-		existingIDs[id] = true
-	}
-	for _, ft := range desired {
-		if ft == nil {
-			continue
-		}
-		id := strings.TrimSpace(ft.ID)
-		if id == "" {
-			continue
-		}
-		if !existingIDs[id] {
-			return false
-		}
-	}
-	return true
-}
-
-func mergeFirewallTemplates(existing []*bcc.FirewallTemplate, desired []*bcc.FirewallTemplate) []*bcc.FirewallTemplate {
-	out := make([]*bcc.FirewallTemplate, 0, len(existing)+len(desired))
-	seen := map[string]bool{}
-
-	add := func(ft *bcc.FirewallTemplate) {
-		if ft == nil {
-			return
-		}
-		id := strings.TrimSpace(ft.ID)
-		if id == "" || seen[id] {
-			return
-		}
-		out = append(out, &bcc.FirewallTemplate{ID: id})
-		seen[id] = true
-	}
-
-	for _, ft := range desired {
-		add(ft)
-	}
-	for _, ft := range existing {
-		add(ft)
-	}
-
-	return out
 }
 
 func dedupeFirewallTemplates(in []*bcc.FirewallTemplate) []*bcc.FirewallTemplate {
