@@ -980,6 +980,14 @@ func (d *Driver) floatingNetworkCandidates(vdc *bcc.Vdc, m *bcc.Manager) ([]stri
 			add(n.ID)
 		}
 	}
+	for _, n := range networks {
+		if n == nil {
+			continue
+		}
+		if strings.TrimSpace(n.ID) != "" {
+			add(n.ID)
+		}
+	}
 
 	if len(out) == 0 {
 		return nil, errors.New("unable to auto-allocate floating IP: external network not found or not accessible; specify --makecloud-floating-ip to use an existing public IP")
