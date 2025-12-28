@@ -2,6 +2,7 @@ package makecloud
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -53,6 +54,8 @@ type Driver struct {
 	DiskSizeGB       int     `json:"diskSizeGb,omitempty"`
 	CPU              int     `json:"cpu,omitempty"`
 	RAMGB            float64 `json:"ramGb,omitempty"`
+
+	FloatingNetworkID string `json:"floatingNetworkId,omitempty"`
 
 	Tags            []string `json:"tags,omitempty"`
 	TemplateField   []string `json:"templateField,omitempty"`
@@ -150,6 +153,11 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "Allocate a new public floating IP (and delete it on remove). Ignored if makecloud-floating-ip is set",
 			EnvVar: "MAKECLOUD_ALLOCATE_FLOATING_IP",
 		},
+		mcnflag.StringFlag{
+			Name:   "makecloud-floating-network-id",
+			Usage:  "External network ID for auto-allocation of a new floating IP (advanced; usually auto-detected)",
+			EnvVar: "MAKECLOUD_FLOATING_NETWORK_ID",
+		},
 
 		mcnflag.StringFlag{
 			Name:   "makecloud-storage-profile-id",
@@ -237,6 +245,7 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	d.FirewallTemplateIDs = opts.StringSlice("makecloud-firewall-template-id")
 	d.FloatingIP = opts.String("makecloud-floating-ip")
 	d.AllocateFloatingIP = opts.Bool("makecloud-allocate-floating-ip")
+	d.FloatingNetworkID = opts.String("makecloud-floating-network-id")
 
 	d.StorageProfileID = opts.String("makecloud-storage-profile-id")
 	d.DiskSizeGB = opts.Int("makecloud-disk-size")
@@ -807,44 +816,152 @@ func (d *Driver) resolveNetwork(vdc *bcc.Vdc, m *bcc.Manager) (*bcc.Network, err
 }
 
 func (d *Driver) allocateFloatingPort(vdc *bcc.Vdc, m *bcc.Manager, tags []bcc.Tag) (*bcc.Port, error) {
-	networkID, err := d.resolveFloatingNetworkID(vdc, m)
-	if err != nil {
-		return nil, err
-	}
-
 	fwTemplates, err := d.resolveFirewallTemplates(vdc, m)
 	if err != nil {
 		return nil, err
 	}
 
-	port := &bcc.Port{
-		Network:           &bcc.Network{ID: networkID},
-		FirewallTemplates: fwTemplates,
-		Tags:              tags,
+	candidates, err := d.floatingNetworkCandidates(vdc, m)
+	if err != nil {
+		return nil, err
 	}
-	if err := vdc.CreateEmptyPort(port); err != nil {
-		return nil, fmt.Errorf("create floating port: %w", err)
+
+	var lastErr error
+	for _, networkID := range candidates {
+		port := &bcc.Port{
+			Network:           &bcc.Network{ID: networkID},
+			FirewallTemplates: fwTemplates,
+			Tags:              tags,
+		}
+
+		if err := vdc.CreateEmptyPort(port); err != nil {
+			lastErr = err
+			continue
+		}
+
+		if port.IpAddress != nil && ipLooksPublic(*port.IpAddress) {
+			return port, nil
+		}
+
+		// Defensive: if we created a non-public port, delete it and try another network.
+		if port.ID != "" {
+			_ = port.Delete()
+		}
 	}
-	return port, nil
+
+	if lastErr != nil {
+		if isForbidden(lastErr) {
+			if reuse, rErr := d.findReusableFloatingPort(vdc, m); rErr == nil && reuse != nil {
+				return reuse, nil
+			}
+		}
+		return nil, fmt.Errorf("create floating port: %w", lastErr)
+	}
+
+	return nil, errors.New("unable to auto-allocate floating IP: external network not found or not accessible; specify --makecloud-floating-ip to use an existing public IP")
 }
 
-func (d *Driver) resolveFloatingNetworkID(vdc *bcc.Vdc, m *bcc.Manager) (string, error) {
+func (d *Driver) findReusableFloatingPort(vdc *bcc.Vdc, m *bcc.Manager) (*bcc.Port, error) {
+	ports, err := vdc.GetPorts(bcc.Arguments{"filter_type": "external"})
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range ports {
+		if p == nil || strings.TrimSpace(p.ID) == "" {
+			continue
+		}
+		if p.Connected != nil && strings.TrimSpace(p.Connected.ID) != "" {
+			continue
+		}
+		full, err := m.GetPort(p.ID)
+		if err != nil {
+			continue
+		}
+		if full.IpAddress != nil && ipLooksPublic(*full.IpAddress) {
+			return full, nil
+		}
+	}
+	return nil, errors.New("no free floating IPs found to reuse")
+}
+
+func (d *Driver) floatingNetworkCandidates(vdc *bcc.Vdc, m *bcc.Manager) ([]string, error) {
+	added := map[string]bool{}
+	out := make([]string, 0, 8)
+
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || added[id] {
+			return
+		}
+		out = append(out, id)
+		added[id] = true
+	}
+
+	if id := strings.TrimSpace(d.FloatingNetworkID); id != "" {
+		add(id)
+		return out, nil
+	}
+
 	// Best-effort: if there are already external ports in this VDC, reuse their
 	// network ID (it's the external network that has a public IP pool).
 	{
-		var ports []*bcc.Port
+		type portListItem struct {
+			ID      string          `json:"id"`
+			Network json.RawMessage `json:"network"`
+		}
+
+		var items []*portListItem
 		args := bcc.Arguments{
 			"vdc":         vdc.ID,
 			"filter_type": "external",
 		}
-		if err := m.GetItems("v1/port", args, &ports); err == nil {
-			for _, p := range ports {
-				if p == nil || p.Network == nil {
+		if err := m.GetItems("v1/port", args, &items); err == nil {
+			for _, p := range items {
+				if p == nil || strings.TrimSpace(p.ID) == "" {
 					continue
 				}
-				id := strings.TrimSpace(p.Network.ID)
-				if id != "" {
-					return id, nil
+				if id := parseNetworkID(p.Network); id != "" {
+					add(id)
+					continue
+				}
+
+				full, err := m.GetPort(p.ID)
+				if err != nil || full == nil || full.Network == nil {
+					continue
+				}
+				add(full.Network.ID)
+			}
+		}
+	}
+
+	// Another hint: router ports usually include an uplink (public) network.
+	{
+		routers, err := vdc.GetRouters()
+		if err == nil {
+			for _, r := range routers {
+				if r == nil {
+					continue
+				}
+				for _, p := range r.Ports {
+					if p == nil || strings.TrimSpace(p.ID) == "" {
+						continue
+					}
+					full, err := m.GetPort(p.ID)
+					if err != nil || full == nil || full.Network == nil {
+						continue
+					}
+					if full.IpAddress != nil && ipLooksPublic(*full.IpAddress) {
+						add(full.Network.ID)
+					}
+				}
+				if r.Floating != nil && strings.TrimSpace(r.Floating.ID) != "" {
+					full, err := m.GetPort(r.Floating.ID)
+					if err != nil || full == nil || full.Network == nil {
+						continue
+					}
+					if full.IpAddress != nil && ipLooksPublic(*full.IpAddress) {
+						add(full.Network.ID)
+					}
 				}
 			}
 		}
@@ -853,18 +970,21 @@ func (d *Driver) resolveFloatingNetworkID(vdc *bcc.Vdc, m *bcc.Manager) (string,
 	// Fallback: try to locate an external-looking network by name.
 	networks, err := vdc.GetNetworks()
 	if err != nil {
-		return "", fmt.Errorf("list networks: %w", err)
+		return nil, fmt.Errorf("list networks: %w", err)
 	}
 	for _, n := range networks {
 		if n == nil {
 			continue
 		}
 		if networkNameLooksExternal(n.Name) && strings.TrimSpace(n.ID) != "" {
-			return strings.TrimSpace(n.ID), nil
+			add(n.ID)
 		}
 	}
 
-	return "", errors.New("unable to auto-allocate floating IP: external network not found or not accessible; specify --makecloud-floating-ip to use an existing public IP")
+	if len(out) == 0 {
+		return nil, errors.New("unable to auto-allocate floating IP: external network not found or not accessible; specify --makecloud-floating-ip to use an existing public IP")
+	}
+	return out, nil
 }
 
 func networkNameLooksExternal(name string) bool {
@@ -879,6 +999,74 @@ func networkNameLooksExternal(name string) bool {
 		}
 	}
 	return false
+}
+
+func parseNetworkID(raw json.RawMessage) string {
+	raw = bytesTrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return strings.TrimSpace(asString)
+	}
+
+	var asObj struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &asObj); err == nil {
+		return strings.TrimSpace(asObj.ID)
+	}
+
+	return ""
+}
+
+func bytesTrimSpace(in []byte) []byte {
+	start := 0
+	for start < len(in) {
+		switch in[start] {
+		case ' ', '\t', '\n', '\r':
+			start++
+			continue
+		default:
+			goto end
+		}
+	}
+end:
+	stop := len(in)
+	for stop > start {
+		switch in[stop-1] {
+		case ' ', '\t', '\n', '\r':
+			stop--
+			continue
+		default:
+			return in[start:stop]
+		}
+	}
+	return in[start:stop]
+}
+
+func isForbidden(err error) bool {
+	var apiErr *bcc.ApiError
+	if errors.As(err, &apiErr) && apiErr.Code() == 403 {
+		return true
+	}
+	return false
+}
+
+func ipLooksPublic(ip string) bool {
+	p := net.ParseIP(strings.TrimSpace(ip))
+	if p == nil {
+		return false
+	}
+	if p.IsLoopback() || p.IsMulticast() || p.IsUnspecified() || p.IsLinkLocalUnicast() || p.IsLinkLocalMulticast() {
+		return false
+	}
+	if p.IsPrivate() {
+		return false
+	}
+	return true
 }
 
 func (d *Driver) resolveFirewallTemplates(vdc *bcc.Vdc, m *bcc.Manager) ([]*bcc.FirewallTemplate, error) {
