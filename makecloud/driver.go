@@ -821,6 +821,24 @@ func (d *Driver) allocateFloatingPort(vdc *bcc.Vdc, m *bcc.Manager, tags []bcc.T
 		return nil, err
 	}
 
+	// Preferred path (per MakeCloud API): create a new public IP by specifying
+	// the VDC in the request body, instead of trying to create a port on an
+	// external network directly (which may be forbidden for client tokens).
+	if p, err := d.createPublicIPPort(vdc.ID, m, fwTemplates, tags); err == nil {
+		if p.IpAddress != nil && ipLooksPublic(*p.IpAddress) {
+			return p, nil
+		}
+		if p.ID != "" {
+			_ = p.Delete()
+		}
+		return nil, errors.New("allocated floating IP has no public IP address")
+	} else if isForbidden(err) {
+		if reuse, rErr := d.findReusableFloatingPort(vdc, m); rErr == nil && reuse != nil {
+			return reuse, nil
+		}
+		// fallthrough to the legacy network-based logic for completeness
+	}
+
 	candidates, err := d.floatingNetworkCandidates(vdc, m)
 	if err != nil {
 		return nil, err
@@ -993,6 +1011,58 @@ func (d *Driver) floatingNetworkCandidates(vdc *bcc.Vdc, m *bcc.Manager) ([]stri
 		return nil, errors.New("unable to auto-allocate floating IP: external network not found or not accessible; specify --makecloud-floating-ip to use an existing public IP")
 	}
 	return out, nil
+}
+
+func (d *Driver) createPublicIPPort(vdcID string, m *bcc.Manager, fwTemplates []*bcc.FirewallTemplate, tags []bcc.Tag) (*bcc.Port, error) {
+	vdcID = strings.TrimSpace(vdcID)
+	if vdcID == "" {
+		return nil, errors.New("vdc id is empty")
+	}
+
+	var fwIDs []string
+	for _, ft := range fwTemplates {
+		if ft == nil {
+			continue
+		}
+		id := strings.TrimSpace(ft.ID)
+		if id == "" {
+			continue
+		}
+		fwIDs = append(fwIDs, id)
+	}
+
+	var tagNames []string
+	for _, t := range tags {
+		n := strings.TrimSpace(t.Name)
+		if n == "" {
+			continue
+		}
+		tagNames = append(tagNames, n)
+	}
+
+	type createPortRequest struct {
+		VDC         string   `json:"vdc"`
+		FwTemplates []string `json:"fw_templates,omitempty"`
+		Tags        []string `json:"tags,omitempty"`
+	}
+	type createPortResponse struct {
+		ID string `json:"id"`
+	}
+
+	req := createPortRequest{
+		VDC:         vdcID,
+		FwTemplates: fwIDs,
+		Tags:        tagNames,
+	}
+
+	var resp createPortResponse
+	if err := m.Request("POST", "v1/port", req, &resp); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(resp.ID) == "" {
+		return nil, errors.New("create public IP: empty port id in response")
+	}
+	return m.GetPort(resp.ID)
 }
 
 func networkNameLooksExternal(name string) bool {
