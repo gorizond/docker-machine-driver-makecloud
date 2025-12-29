@@ -1,0 +1,11 @@
+plugin/makecloud-node-driver-0.1.13.umd.min.137.js
+plugin/makecloud-node-driver-0.1.13.umd.min.137.js.map
+plugin/makecloud-node-driver-0.1.13.umd.min.37.js
+plugin/makecloud-node-driver-0.1.13.umd.min.37.js.map
+plugin/makecloud-node-driver-0.1.13.umd.min.cloud-credential.js
+plugin/makecloud-node-driver-0.1.13.umd.min.cloud-credential.js.map
+plugin/makecloud-node-driver-0.1.13.umd.min.js
+plugin/makecloud-node-driver-0.1.13.umd.min.js.map
+plugin/makecloud-node-driver-0.1.13.umd.min.machine-config.js
+plugin/makecloud-node-driver-0.1.13.umd.min.machine-config.js.map
+plugin/package.json
