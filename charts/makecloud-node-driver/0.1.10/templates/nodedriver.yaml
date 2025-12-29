@@ -1,0 +1,23 @@
+{{- if .Values.nodeDriver.enabled }}
+{{- $driverVersion := (default .Chart.AppVersion .Values.nodeDriver.versionOverride) -}}
+{{- $driverTag := printf "v%s" $driverVersion -}}
+{{- $defaultUrl := printf "https://github.com/gorizond/docker-machine-driver-makecloud/releases/download/%s/docker-machine-driver-makecloud_%s_linux_amd64.tar.gz" $driverTag $driverTag -}}
+apiVersion: management.cattle.io/v3
+kind: NodeDriver
+metadata:
+  name: {{ .Values.nodeDriver.name | quote }}
+  annotations:
+    publicCredentialFields: {{ .Values.nodeDriver.publicCredentialFields | quote }}
+    privateCredentialFields: {{ .Values.nodeDriver.privateCredentialFields | quote }}
+spec:
+  active: {{ .Values.nodeDriver.active }}
+  addCloudCredential: {{ .Values.nodeDriver.addCloudCredential }}
+  builtin: {{ .Values.nodeDriver.builtin }}
+  checksum: {{ .Values.nodeDriver.checksum | quote }}
+  description: {{ .Values.nodeDriver.description | quote }}
+  displayName: {{ .Values.nodeDriver.displayName | quote }}
+  externalId: {{ .Values.nodeDriver.externalId | quote }}
+  uiUrl: {{ .Values.nodeDriver.uiUrl | quote }}
+  url: {{ default $defaultUrl .Values.nodeDriver.url | quote }}
+  whitelistDomains: {{ toJson .Values.nodeDriver.whitelistDomains }}
+{{- end }}
