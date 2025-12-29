@@ -121,11 +121,7 @@ runcmd:
 
       if [ -n "${private_ip}" ]; then
         mkdir -p /etc/rancher/rke2/config.yaml.d
-        cat >/etc/rancher/rke2/config.yaml.d/99-makecloud.yaml <<EOF
-advertise-address: ${private_ip}
-node-ip:
-  - ${private_ip}
-EOF
+        printf "advertise-address: %s\nnode-ip:\n  - %s\n" "${private_ip}" "${private_ip}" >/etc/rancher/rke2/config.yaml.d/99-makecloud.yaml
       fi
 
       if [ -f /usr/local/custom_script/install.sh ] && [ ! -f /etc/systemd/system/rancher-system-agent.service ]; then
