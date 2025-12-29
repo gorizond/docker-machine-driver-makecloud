@@ -9,6 +9,7 @@ import (
 type userDataPart struct {
 	contentType string
 	content     string
+	filename    string
 }
 
 func buildFinalUserData(raw string, sshPublicKey string, sshUser string, disableInject bool) (string, error) {
@@ -34,8 +35,9 @@ func buildFinalUserData(raw string, sshPublicKey string, sshUser string, disable
 
 	if rancherBootstrap {
 		parts = append(parts, userDataPart{
-			contentType: "text/cloud-config",
-			content:     buildRancherBootstrapCloudConfig(),
+			contentType: "text/x-shellscript-per-instance",
+			content:     buildRancherBootstrapScript(),
+			filename:    "10-makecloud-rancher-bootstrap.sh",
 		})
 	}
 
@@ -105,31 +107,26 @@ func needsRancherBootstrap(raw string) bool {
 	return strings.Contains(raw, "/usr/local/custom_script/install.sh")
 }
 
-func buildRancherBootstrapCloudConfig() string {
-	return `#cloud-config
-write_files:
-  - path: /var/lib/cloud/scripts/per-instance/10-makecloud-rancher-bootstrap.sh
-    permissions: "0755"
-    content: |
-      #!/bin/sh
-      set -eu
+func buildRancherBootstrapScript() string {
+	return `#!/bin/sh
+set -eu
 
-      # Prefer the primary private IPv4 of the VM. Floating IPs are typically
-      # NATed and not reachable from inside the guest, so they must not be used
-      # for the apiserver advertise address.
-      private_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}' || true)"
-      if [ -z "${private_ip}" ]; then
-        private_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-      fi
+# Prefer the primary private IPv4 of the VM. Floating IPs are typically NATed
+# and not reachable from inside the guest, so they must not be used for the
+# apiserver advertise address.
+private_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}' || true)"
+if [ -z "${private_ip}" ]; then
+  private_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+fi
 
-      if [ -n "${private_ip}" ]; then
-        mkdir -p /etc/rancher/rke2/config.yaml.d
-        printf "advertise-address: %s\nnode-ip:\n  - %s\n" "${private_ip}" "${private_ip}" >/etc/rancher/rke2/config.yaml.d/99-makecloud.yaml
-      fi
+if [ -n "${private_ip}" ]; then
+  mkdir -p /etc/rancher/rke2/config.yaml.d
+  printf "advertise-address: %s\nnode-ip:\n  - %s\n" "${private_ip}" "${private_ip}" >/etc/rancher/rke2/config.yaml.d/99-makecloud.yaml
+fi
 
-      if [ -f /usr/local/custom_script/install.sh ] && [ ! -f /etc/systemd/system/rancher-system-agent.service ]; then
-        sh /usr/local/custom_script/install.sh >/var/log/rancher-custom-install.log 2>&1 || true
-      fi
+if [ -f /usr/local/custom_script/install.sh ] && [ ! -f /etc/systemd/system/rancher-system-agent.service ]; then
+  sh /usr/local/custom_script/install.sh >/var/log/rancher-custom-install.log 2>&1 || true
+fi
 `
 }
 
@@ -175,7 +172,11 @@ func buildMultipartCloudInit(parts []userDataPart) string {
 		}
 		b.WriteString(fmt.Sprintf("Content-Type: %s\n", p.contentType))
 		b.WriteString("Content-Transfer-Encoding: 7bit\n")
-		b.WriteString("Content-Disposition: attachment\n")
+		if p.filename != "" {
+			b.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\n", p.filename))
+		} else {
+			b.WriteString("Content-Disposition: attachment\n")
+		}
 		b.WriteString("\n")
 		b.WriteString(strings.TrimSpace(p.content))
 		b.WriteString("\n")
