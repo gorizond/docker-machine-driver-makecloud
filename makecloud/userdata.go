@@ -107,14 +107,17 @@ func needsRancherBootstrap(raw string) bool {
 
 func buildRancherBootstrapCloudConfig() string {
 	return `#cloud-config
-runcmd:
-  - |
+write_files:
+  - path: /var/lib/cloud/scripts/per-instance/10-makecloud-rancher-bootstrap.sh
+    permissions: "0755"
+    content: |
+      #!/bin/sh
       set -eu
 
       # Prefer the primary private IPv4 of the VM. Floating IPs are typically
       # NATed and not reachable from inside the guest, so they must not be used
       # for the apiserver advertise address.
-      private_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i==\"src\") {print $(i+1); exit}}' || true)"
+      private_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}' || true)"
       if [ -z "${private_ip}" ]; then
         private_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
       fi
